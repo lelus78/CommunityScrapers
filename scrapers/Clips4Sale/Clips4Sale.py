@@ -155,15 +155,15 @@ if user_cookies := parse_cookie_header(str(config.COOKIES or "")):
     log.debug(f"Using {len(user_cookies)} cookies from config.ini")
 
 
-def unblur_image(url: str) -> str:
+def unblur_image(url: str, check: bool = True) -> str:
     """
     Where age verification applies (e.g. Italy) Clips4Sale hands out blurred previews
     named previewlg_b_<id>.jpg; the sharp previewlg_<id>.jpg sits next to it and is
     public, so prefer it when it exists
     """
     sharp = re.sub(r"/previewlg_b_(\d+)", r"/previewlg_\1", url)
-    if sharp == url:
-        return url
+    if sharp == url or not check:
+        return sharp
     try:
         response = scraper.head(sharp, timeout=15, allow_redirects=True)
     except requests.RequestException as e:
@@ -327,8 +327,8 @@ def to_scraped_scene(clip: dict, detailed: bool = False) -> ScrapedScene:
     if image := (dig(clip, "cdn_previewlg_link") or dig(clip, "previewLink")):
         image = "https:" + image if image.startswith("//") else normalize_url(image)
         log.debug(f"Scene image: {image}")
-        if detailed:
-            image = unblur_image(image)
+        # search results: rewrite without checking, to avoid one request per result
+        image = unblur_image(image, check=detailed)
         scene["image"] = fetch_image(image) if detailed else image
     if performers:
         scene["performers"] = performers
