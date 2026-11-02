@@ -22,7 +22,7 @@ from py_common.util import dig, guess_nationality, is_own_url, scraper_args
 
 NETWORK = "Ladyboy Gold"
 
-type Config = dict[str, dict[str, str]]
+Config = dict[str, dict[str, str]]
 
 
 @cache_to_disk(ttl=86400)

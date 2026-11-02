@@ -1,3 +1,4 @@
+import base64
 import html
 import json
 import re
@@ -7,6 +8,7 @@ from typing import TypedDict
 from urllib.parse import quote
 
 from py_common import cache, log
+from py_common.config import get_config
 from py_common.deps import ensure_requirements
 from py_common.graphql import configuration
 from py_common.types import (
@@ -19,6 +21,20 @@ from py_common.types import (
 from py_common.util import dig, is_own_url, scraper_args
 
 ensure_requirements("requests", "bs4:beautifulsoup4")
+
+config = get_config(
+    default="""
+# Optional: cookies of a logged-in Clips4Sale browser session.
+# Without them Clips4Sale may serve blurred preview images (e.g. where age
+# verification is required). While logged in on www.clips4sale.com, open the
+# browser developer tools (F12) > Network, reload the page, select the first
+# request to www.clips4sale.com and copy the whole value of its "Cookie" request
+# header here, on one line, e.g.  COOKIES = name1=value1; name2=value2
+# These cookies grant access to your account: keep this file private.
+# They expire eventually: if images get blurred again, copy them again.
+COOKIES =
+"""
+)
 
 import requests  # noqa: E402
 from bs4 import BeautifulSoup  # noqa: E402
@@ -113,6 +129,52 @@ for _name, _value in {
     "i18nextLng": "en",
 }.items():
     scraper.cookies.set(_name, _value, domain=".clips4sale.com", path="/")
+
+
+def parse_cookie_header(header: str) -> dict[str, str]:
+    """
+    Parses a browser "Cookie" request header ("a=1; b=2") into a dict,
+    tolerating a leading "Cookie:" and surrounding quotes from copy-pasting
+    """
+    header = header.strip().strip("'\"").strip()
+    if header.lower().startswith("cookie:"):
+        header = header[len("cookie:") :].strip().strip("'\"")
+    cookies: dict[str, str] = {}
+    for part in header.split(";"):
+        name, sep, value = part.strip().partition("=")
+        if sep and (name := name.strip()):
+            cookies[name] = value.strip()
+    return cookies
+
+
+LOGGED_IN = False
+if user_cookies := parse_cookie_header(str(config.COOKIES or "")):
+    for _name, _value in user_cookies.items():
+        scraper.cookies.set(_name, _value, domain=".clips4sale.com", path="/")
+    LOGGED_IN = True
+    log.debug(f"Using {len(user_cookies)} cookies from config.ini")
+
+
+def fetch_image(url: str) -> str:
+    """
+    When logged in, download the image with our session so Stash gets the same
+    unblurred image the browser sees, and pass it on as a base64 data URI.
+    Falls back to the plain URL if anything goes wrong
+    """
+    if not LOGGED_IN:
+        return url
+    try:
+        response = scraper.get(url, timeout=30)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        log.warning(f"Failed to download image {url}: {e}")
+        return url
+    content_type = response.headers.get("Content-Type", "image/jpeg").split(";")[0]
+    if not content_type.startswith("image/"):
+        log.warning(f"Unexpected content type {content_type!r} for image {url}")
+        return url
+    encoded = base64.b64encode(response.content).decode("ascii")
+    return f"data:{content_type};base64,{encoded}"
 
 
 def fetch(url: str) -> requests.Response:
@@ -242,7 +304,9 @@ def to_scraped_scene(clip: dict, detailed: bool = False) -> ScrapedScene:
     if link := normalize_url(dig(clip, "link")):
         scene["urls"] = [link]
     if image := (dig(clip, "cdn_previewlg_link") or dig(clip, "previewLink")):
-        scene["image"] = image
+        image = "https:" + image if image.startswith("//") else normalize_url(image)
+        log.debug(f"Scene image: {image}")
+        scene["image"] = fetch_image(image) if detailed else image
     if performers:
         scene["performers"] = performers
     if tags:
