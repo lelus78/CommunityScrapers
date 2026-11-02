@@ -29,7 +29,7 @@ config = get_config(
 # verification is required). While logged in on www.clips4sale.com, open the
 # browser developer tools (F12) > Network, reload the page, select the first
 # request to www.clips4sale.com and copy the whole value of its "Cookie" request
-# header here, on one line, e.g.  COOKIES = name1=value1; name2=value2
+# header here, on one line, after "COOKIES" below
 # These cookies grant access to your account: keep this file private.
 # They expire eventually: if images get blurred again, copy them again.
 COOKIES =
