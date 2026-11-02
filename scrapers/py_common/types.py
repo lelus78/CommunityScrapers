@@ -1,4 +1,22 @@
-from typing import Literal, Required, TypedDict
+from typing import Literal, TypedDict
+
+try:
+    from typing import Required
+except ImportError:  # Python < 3.11
+    try:
+        from typing_extensions import Required
+    except ImportError:
+
+        class _RequiredShim:
+            """
+            Minimal stand-in for typing.Required on Python 3.10 without typing_extensions:
+            these types are only used as hints, so unwrapping the inner type is enough
+            """
+
+            def __getitem__(self, item):
+                return item
+
+        Required = _RequiredShim()
 
 """
 Types for outputs that scrapers can produce and that Stash will accept
@@ -6,7 +24,7 @@ Types for outputs that scrapers can produce and that Stash will accept
 
 # export specific types for eternal inclusion
 # Title case matches what Stash itself writes when importing from stash-box
-type Ethnicity = Literal[
+Ethnicity = Literal[
     "Caucasian",
     "Black",
     "Asian",
@@ -17,7 +35,7 @@ type Ethnicity = Literal[
     "Other",
 ]
 
-type Gender = Literal[
+Gender = Literal[
     "MALE",
     "FEMALE",
     "TRANSGENDER_MALE",
@@ -26,8 +44,8 @@ type Gender = Literal[
     "NON_BINARY",
 ]
 
-type EyeColor = Literal["Blue", "Brown", "Green", "Grey", "Hazel", "Red"]
-type HairColor = Literal[
+EyeColor = Literal["Blue", "Brown", "Green", "Grey", "Hazel", "Red"]
+HairColor = Literal[
     "Blonde",
     "Brunette",
     "Black",
