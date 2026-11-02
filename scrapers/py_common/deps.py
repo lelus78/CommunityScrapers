@@ -1,8 +1,9 @@
-import sys
-import subprocess
+import importlib
 import re
-from pathlib import Path
+import subprocess
+import sys
 from inspect import stack
+from pathlib import Path
 
 from py_common import log
 
@@ -31,6 +32,40 @@ def _parse_package(specifier: str) -> tuple[str, str, str] | None:
     )
 
 
+def _requirements_met(parsed_deps: dict[str, tuple[str, str, str] | None]) -> bool:
+    """
+    Returns True when every dependency can be imported from the current sys.path
+
+    A version mismatch only logs a warning, as before: reinstalling would not
+    help because pip is called without the pinned version
+    """
+    importlib.invalidate_caches()
+    for specifier, parsed in parsed_deps.items():
+        if not parsed:
+            log.warning(f"Ignoring invalid package specifier: {specifier}")
+            continue
+        _, version, import_name = parsed
+        try:
+            module = importlib.import_module(import_name)
+        except ImportError as e:
+            log.debug(f"Failed to import '{e.name or import_name}': {e}")
+            _forget_module(import_name)
+            return False
+        if version and getattr(module, "__version__", None) != version:
+            log.warning(
+                f"'{import_name}' {getattr(module, '__version__', '?')} != {version}, bailing out"
+            )
+    return True
+
+
+def _forget_module(import_name: str):
+    "Drops a (partially) imported module so it can be imported again from another path"
+    root = import_name.split(".")[0]
+    for name in list(sys.modules):
+        if name == root or name.startswith(root + "."):
+            del sys.modules[name]
+
+
 def ensure_requirements(*deps: str):
     """
     Ensures that the given dependencies are installed for the current scraper
@@ -55,26 +90,18 @@ def ensure_requirements(*deps: str):
     parsed_deps = {dep: _parse_package(dep) for dep in deps}
 
     deps_folder = current_path.parent.parent / "automatic_dependencies"
-    sys.path.insert(0, str(deps_folder))
 
-    try:
-        import importlib
-
-        for specifier, parsed in parsed_deps.items():
-            if not parsed:
-                log.warning(f"Ignoring invalid package specifier: {specifier}")
-                continue
-            _, version, import_name = parsed
-            module = importlib.import_module(import_name)
-            if version and module.__version__ != version:
-                log.warning(
-                    f"'{import_name}' {module.__version__} != {version}, bailing out"
-                )
-                return
-        # All deps found, no need to reinstall
+    # Prefer packages that are already installed system-wide (e.g. the musl
+    # builds shipped in the Alpine based Stash image) and only fall back to the
+    # automatic_dependencies folder when they are missing. Putting that folder
+    # first let a broken copy in it (e.g. a glibc build of lxml) shadow a
+    # working system package and crash every scraper that imports it.
+    if _requirements_met(parsed_deps):
         return
-    except ImportError as e:
-        log.debug(f"Failed to import '{e.name}'")
+
+    sys.path.insert(0, str(deps_folder))
+    if _requirements_met(parsed_deps):
+        return
 
     package_names = [parsed[0] for parsed in parsed_deps.values() if parsed]
     log.warning(f"Installing dependencies: {', '.join(package_names)}")
