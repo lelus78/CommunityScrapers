@@ -61,6 +61,63 @@ def clean_search_query(query: str) -> str:
     return re.sub(r"\s{2,}", " ", cleaned).strip()
 
 
+# Clips4Sale censors words server side as "first letter + one asterisk per hidden
+# letter" (P**** -> Pussy); no API field or page has the original text, so we
+# restore what we can from a word list keyed on first letter + length
+UNCENSOR_WORDS: dict[tuple[str, int], list[str]] = {}
+for _line in (
+    (Path(__file__).parent / "uncensor_words.txt")
+    .read_text(encoding="utf-8")
+    .splitlines()
+):
+    if (_word := _line.strip().lower()) and not _word.startswith("#"):
+        UNCENSOR_WORDS.setdefault((_word[0], len(_word)), []).append(_word)
+
+CENSORED_WORD = re.compile(r"(?<![\w*])([A-Za-z])(\*+)(?![\w*])")
+
+
+def uncensor(text: str | None, hints: set[str] = frozenset()) -> str:
+    """
+    Restores censored words: when several words fit (c*** = cock or cunt) a word
+    from hints (uncensored words seen elsewhere in the same clip) wins, otherwise
+    the first one listed in uncensor_words.txt. Unknown words keep their asterisks
+    """
+    if not text or "*" not in text:
+        return text or ""
+
+    def restore(match: re.Match[str]) -> str:
+        first, stars = match.groups()
+        candidates = UNCENSOR_WORDS.get((first.lower(), len(stars) + 1))
+        if not candidates:
+            return match.group(0)
+        word = next((c for c in candidates if c in hints), candidates[0])
+        return first + word[1:]
+
+    return CENSORED_WORD.sub(restore, text)
+
+
+def strip_tags(text: str | None) -> str | None:
+    "Search results wrap matched words in <em> highlight tags"
+    return re.sub(r"</?em>", "", text) if text else text
+
+
+def clip_hints(clip: dict) -> set[str]:
+    "Uncensored words Clips4Sale leaves in preview file names and keyword fields"
+    sources = [
+        dig(clip, key) or ""
+        for key in (
+            "gifPreviewUrl",
+            "previewUrl",
+            "customPreviewUrl",
+            "cdn_preview_link",
+        )
+    ]
+    sources.extend(
+        str(k.get("keyword") or "") for k in dig(clip, "keyword_links") or []
+    )
+    return {w.lower() for s in sources for w in re.findall(r"[A-Za-z]+", s)}
+
+
 class PerformerData(TypedDict):
     image: str | None
     tags: list[ScrapedTag]
@@ -254,9 +311,10 @@ def fetch_performer_data(performer_id: str, performer_slug: str) -> PerformerDat
 
 
 def to_scraped_scene(clip: dict, detailed: bool = False) -> ScrapedScene:
-    title = clean_text(dig(clip, "title"))
+    hints = clip_hints(clip)
+    title = uncensor(strip_tags(clean_text(dig(clip, "title"))), hints)
 
-    studio_name = dig(clip, "studio", "name")
+    studio_name = strip_tags(dig(clip, "studio", "name"))
     studio_link = normalize_url(dig(clip, "studio", "link"))
     studio_id = dig(clip, "studio", "id")
 
@@ -295,7 +353,7 @@ def to_scraped_scene(clip: dict, detailed: bool = False) -> ScrapedScene:
 
     unique_tags: dict[str, str] = {}
     for tag_name in potential_tags:
-        if not (original := (tag_name or "").strip()):
+        if not (original := uncensor(strip_tags(tag_name), hints).strip()):
             continue
         lower = original.lower()
         stored = unique_tags.get(lower)
@@ -334,7 +392,7 @@ def to_scraped_scene(clip: dict, detailed: bool = False) -> ScrapedScene:
         scene["performers"] = performers
     if tags:
         scene["tags"] = tags
-    if details := clean_text(dig(clip, "description")):
+    if details := uncensor(clean_text(dig(clip, "description")), hints):
         scene["details"] = details
 
     return scene
